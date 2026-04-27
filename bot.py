@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from groq import Groq
+from openai import OpenAI
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -66,7 +67,9 @@ STYLES = {
 }
 
 DEFAULT_STYLE = os.getenv("ROAST_STYLE", "spicy").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 MAX_TARGET_LENGTH = 80
 MAX_CONTEXT_MESSAGES = 8
 MAX_ROAST_CHARS = 240
@@ -81,6 +84,7 @@ IDENTITY_SLUR_HINTS = {
 }
 
 GROQ_CLIENT: Groq | None = None
+OPENAI_CLIENT: OpenAI | None = None
 
 
 def clean_target(raw: str | None) -> str:
@@ -139,6 +143,28 @@ def groq_client() -> Groq | None:
     return GROQ_CLIENT
 
 
+def openai_client() -> OpenAI | None:
+    global OPENAI_CLIENT
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    if OPENAI_CLIENT is None:
+        OPENAI_CLIENT = OpenAI(api_key=api_key)
+    return OPENAI_CLIENT
+
+
+def active_provider() -> str:
+    if LLM_PROVIDER in {"groq", "openai"}:
+        return LLM_PROVIDER
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    if os.getenv("GROQ_API_KEY"):
+        return "groq"
+    return "fallback"
+
+
 def remember_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message or not update.effective_message.text:
         return
@@ -185,18 +211,14 @@ def fallback_roast(style: RoastStyle, target: str) -> str:
     return random.choice(style.roasts).format(target=target)
 
 
-def generate_roast_sync(
+def roast_prompts(
     *,
     target: str,
     style: RoastStyle,
     trigger_text: str,
     reply_context: str,
     chat_context: str,
-) -> str:
-    client = groq_client()
-    if client is None:
-        raise RuntimeError("GROQ_API_KEY is not set.")
-
+) -> tuple[str, str]:
     system_prompt = (
         "You are a Telegram group-chat roasting bot. Write one short roast only. "
         "Be clever, specific, and funny. Keep it playful, not cruel. "
@@ -213,6 +235,56 @@ def generate_roast_sync(
         f"{reply_context or 'No replied message.'}\n\n"
         f"Recent chat:\n{chat_context}"
     )
+    return system_prompt, user_prompt
+
+
+def generate_roast_sync(
+    *,
+    target: str,
+    style: RoastStyle,
+    trigger_text: str,
+    reply_context: str,
+    chat_context: str,
+) -> str:
+    provider = active_provider()
+    if provider == "openai":
+        return generate_openai_roast_sync(
+            target=target,
+            style=style,
+            trigger_text=trigger_text,
+            reply_context=reply_context,
+            chat_context=chat_context,
+        )
+    if provider == "groq":
+        return generate_groq_roast_sync(
+            target=target,
+            style=style,
+            trigger_text=trigger_text,
+            reply_context=reply_context,
+            chat_context=chat_context,
+        )
+    raise RuntimeError("No LLM API key is set.")
+
+
+def generate_groq_roast_sync(
+    *,
+    target: str,
+    style: RoastStyle,
+    trigger_text: str,
+    reply_context: str,
+    chat_context: str,
+) -> str:
+    client = groq_client()
+    if client is None:
+        raise RuntimeError("GROQ_API_KEY is not set.")
+
+    system_prompt, user_prompt = roast_prompts(
+        target=target,
+        style=style,
+        trigger_text=trigger_text,
+        reply_context=reply_context,
+        chat_context=chat_context,
+    )
 
     completion = client.chat.completions.create(
         model=GROQ_MODEL,
@@ -226,6 +298,36 @@ def generate_roast_sync(
     )
     text = completion.choices[0].message.content or ""
     text = re.sub(r"\s+", " ", text).strip().strip('"')
+    return text[:MAX_ROAST_CHARS].rstrip()
+
+
+def generate_openai_roast_sync(
+    *,
+    target: str,
+    style: RoastStyle,
+    trigger_text: str,
+    reply_context: str,
+    chat_context: str,
+) -> str:
+    client = openai_client()
+    if client is None:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
+
+    system_prompt, user_prompt = roast_prompts(
+        target=target,
+        style=style,
+        trigger_text=trigger_text,
+        reply_context=reply_context,
+        chat_context=chat_context,
+    )
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        reasoning={"effort": "low"},
+        instructions=system_prompt,
+        input=user_prompt,
+        max_output_tokens=100,
+    )
+    text = re.sub(r"\s+", " ", response.output_text or "").strip().strip('"')
     return text[:MAX_ROAST_CHARS].rstrip()
 
 
@@ -261,7 +363,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "I am your friendly roast bot.\n\n"
         "Use /roast, reply to someone with /roast, or try /roast spicy Paolo.\n"
         "Available styles: mild, spicy.\n\n"
-        "If GROQ_API_KEY is set, I use Groq for smarter context-aware roasts.\n"
+        "If an LLM key is set, I use it for smarter context-aware roasts.\n"
         "I keep it playful, not hateful. Nobody needs villain DLC in a group chat."
     )
     await update.effective_message.reply_text(message)
@@ -300,7 +402,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/roast mild Paolo - mild roast Paolo\n"
         "/roast spicy Paolo - spicy roast Paolo\n"
         "Reply to a message with /roast to roast that sender.\n"
-        "Set GROQ_API_KEY for smart contextual roasts."
+        "Set GROQ_API_KEY or OPENAI_API_KEY for smart contextual roasts."
     )
 
 
