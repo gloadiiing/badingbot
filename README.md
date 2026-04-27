@@ -1,0 +1,70 @@
+# Telegram Roasting Bot
+
+A playful Telegram bot that roasts on command without crossing into hateful or targeted abuse.
+
+## Setup
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. Create a virtual environment:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+3. Install dependencies:
+
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+4. Set your token with either PowerShell:
+
+   ```powershell
+   $env:TELEGRAM_BOT_TOKEN="123456:your-token"
+   ```
+
+   Or copy `.env.example` to `.env` and replace the token there.
+
+   To enable smarter roasts, also add a Groq API key:
+
+   ```powershell
+   $env:GROQ_API_KEY="gsk_your-key"
+   ```
+
+5. Run the bot:
+
+   ```powershell
+   python bot.py
+   ```
+
+## Commands
+
+- `/start` - show a quick intro
+- `/help` - show usage
+- `/roast` - roast yourself
+- `/roast mild Paolo` - mild roast Paolo
+- `/roast spicy Paolo` - spicy roast Paolo
+
+You can also reply to someone else's message with `/roast`.
+
+## Smart Roasts With Groq
+
+When `GROQ_API_KEY` is set, `/roast` asks Groq for a short contextual roast using:
+
+```env
+GROQ_MODEL=llama-3.3-70b-versatile
+```
+
+The bot keeps a small rolling memory of recent visible chat messages so replies can feel less repetitive. If Groq is unavailable, it falls back to the built-in roast list.
+
+## Group Chat Notes
+
+If the bot does not see normal group messages, open [@BotFather](https://t.me/BotFather), choose your bot, and check the bot privacy setting. Commands like `/roast` still work with privacy enabled.
+
+To let the bot occasionally roast normal text messages, set:
+
+```powershell
+$env:ROAST_EVERY_TEXT="true"
+$env:ROAST_REPLY_CHANCE="0.25"
+```
